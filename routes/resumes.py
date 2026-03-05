@@ -3,14 +3,13 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 
-
 from schemas.resume import (
-    ResumeListItem,
     ResumeUpdate,
-    ResumeResponse,
     ResumeUploadResponse,
+    SyncResponse,
 )
 from services.supabase_client import get_supabase
+from services.resume_service import get_all_resumes_for_sync
 
 router = APIRouter(prefix="/resumes", tags=["resumes"])
 TABLE = "resumes"
@@ -23,15 +22,18 @@ ALLOWED_TYPES = {
 MAX_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
+# ── Sync endpoint ────────────────────────────────────────
+@router.get("/", response_model=SyncResponse)
+async def list_resumes():
+    return get_all_resumes_for_sync()
+
+
 # ── Upload endpoint ──────────────────────────────────────
 @router.post("/upload", response_model=ResumeUploadResponse, status_code=201)
 async def upload_resume(
     file: UploadFile = File(...),
     title: str = Form(...),
-    full_name: str = Form(...),
-    email: str = Form(...),
 ):
-    # 1. Validate content type
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(
             status_code=400,
@@ -39,19 +41,15 @@ async def upload_resume(
                    f"Allowed: PDF, DOC, DOCX",
         )
 
-    # 2. Read file and enforce size limit
     content = await file.read()
     if len(content) > MAX_SIZE:
         raise HTTPException(status_code=400, detail="File exceeds 10 MB limit")
 
-    # 3. Calculate SHA256 checksum
     checksum = hashlib.sha256(content).hexdigest()
 
-    # 4. Build a unique storage path
     resume_id = uuid4()
     storage_path = f"{resume_id}/{file.filename}"
 
-    # 5. Upload to Supabase Storage
     sb = get_supabase()
     try:
         sb.storage.from_(BUCKET).upload(
@@ -62,12 +60,9 @@ async def upload_resume(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Storage upload failed: {e}")
 
-    # 6. Insert metadata into Postgres
     row = {
         "id": str(resume_id),
         "title": title,
-        "full_name": full_name,
-        "email": email,
         "filename": file.filename,
         "storage_path": storage_path,
         "checksum_sha256": checksum,
@@ -78,11 +73,10 @@ async def upload_resume(
     try:
         resp = sb.table(TABLE).insert(row).execute()
     except Exception as e:
-        # 7. Rollback: delete the uploaded file if DB insert fails
         try:
             sb.storage.from_(BUCKET).remove([storage_path])
         except Exception:
-            pass  # best-effort cleanup
+            pass
         raise HTTPException(
             status_code=502,
             detail=f"Database insert failed (storage rolled back): {e}",
@@ -100,40 +94,29 @@ async def upload_resume(
     )
 
 
-# ── CRUD endpoints ───────────────────────────────────────
-@router.get("/", response_model=list[ResumeListItem])
-async def list_resumes(limit: int = 50, offset: int = 0):
-    resp = (
-        get_supabase()
-        .table(TABLE)
-        .select("id, filename, checksum_sha256, size_bytes, updated_at")
-        .order("updated_at", desc=True)
-        .range(offset, offset + limit - 1)
-        .execute()
-    )
-    return resp.data
-
-
+# ── Download (signed URL) ───────────────────────────────
 @router.get("/{resume_id}")
 async def get_resume(resume_id: UUID):
     sb = get_supabase()
 
-    # 1. Fetch storage_path and metadata from DB
-    resp = (
-        sb.table(TABLE)
-        .select("id, filename, storage_path, content_type, size_bytes")
-        .eq("id", str(resume_id))
-        .maybe_single()
-        .execute()
-    )
-    if resp.data is None:
+    try:
+        resp = (
+            sb.table(TABLE)
+            .select("id, filename, storage_path, content_type, size_bytes")
+            .eq("id", str(resume_id))
+            .maybe_single()
+            .execute()
+        )
+    except Exception:
+        resp = None
+
+    if resp is None or resp.data is None:
         raise HTTPException(status_code=404, detail="Resume not found")
 
     storage_path = resp.data.get("storage_path")
     if not storage_path:
         raise HTTPException(status_code=404, detail="No file associated with this resume")
 
-    # 2. Generate signed URL (valid for 1 hour)
     try:
         signed = sb.storage.from_(BUCKET).create_signed_url(
             path=storage_path,
@@ -142,7 +125,6 @@ async def get_resume(resume_id: UUID):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to generate signed URL: {e}")
 
-    # 3. Return signed URL with metadata
     return {
         "id": str(resume_id),
         "filename": resp.data.get("filename"),
@@ -153,7 +135,8 @@ async def get_resume(resume_id: UUID):
     }
 
 
-@router.patch("/{resume_id}", response_model=ResumeResponse)
+# ── Update metadata ─────────────────────────────────────
+@router.patch("/{resume_id}")
 async def update_resume(resume_id: UUID, payload: ResumeUpdate):
     updates = payload.model_dump(exclude_unset=True)
     if not updates:
@@ -172,11 +155,11 @@ async def update_resume(resume_id: UUID, payload: ResumeUpdate):
     return resp.data
 
 
+# ── Delete (storage + DB) ───────────────────────────────
 @router.delete("/{resume_id}")
 async def delete_resume(resume_id: UUID):
     sb = get_supabase()
 
-    # 1. Fetch storage_path from DB
     resp = (
         sb.table(TABLE)
         .select("id, storage_path")
@@ -189,7 +172,6 @@ async def delete_resume(resume_id: UUID):
 
     storage_path = resp.data.get("storage_path")
 
-    # 2. Delete file from Supabase Storage
     if storage_path:
         try:
             sb.storage.from_(BUCKET).remove([storage_path])
@@ -199,7 +181,6 @@ async def delete_resume(resume_id: UUID):
                 detail=f"Storage deletion failed: {e}",
             )
 
-    # 3. Delete metadata row from DB
     try:
         sb.table(TABLE).delete().eq("id", str(resume_id)).execute()
     except Exception as e:
@@ -208,7 +189,6 @@ async def delete_resume(resume_id: UUID):
             detail=f"Database deletion failed: {e}",
         )
 
-    # 4. Return success
     return {
         "status": "deleted",
         "id": str(resume_id),
