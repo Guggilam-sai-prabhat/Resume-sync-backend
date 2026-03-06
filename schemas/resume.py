@@ -6,6 +6,7 @@ from uuid import UUID
 # ── Sync response models ─────────────────────────────────
 class ResumeFileEntry(BaseModel):
     id: UUID
+    title: str | None = None
     checksum: str
     size: int
     updated_at: datetime

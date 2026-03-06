@@ -12,7 +12,7 @@ def get_all_resumes_for_sync() -> SyncResponse:
     try:
         resp = (
             sb.table("resumes")
-            .select("id, filename, checksum_sha256, size_bytes, updated_at, storage_path")
+            .select("id, title, filename, checksum_sha256, size_bytes, updated_at, storage_path")
             .order("updated_at", desc=True)
             .execute()
         )
@@ -29,6 +29,7 @@ def get_all_resumes_for_sync() -> SyncResponse:
             continue
         files[filename] = ResumeFileEntry(
             id=row["id"],
+            title=row.get("title"),
             checksum=row["checksum_sha256"],
             size=row["size_bytes"],
             updated_at=row["updated_at"],
