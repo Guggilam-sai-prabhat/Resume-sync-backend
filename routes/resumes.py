@@ -22,6 +22,24 @@ ALLOWED_TYPES = {
 MAX_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
+# ── Debug endpoint (remove after testing) ────────────────
+@router.get("/debug/raw")
+async def debug_raw():
+    sb = get_supabase()
+    resp = (
+        sb.table(TABLE)
+        .select("id, title, filename", count="exact")
+        .limit(1000)
+        .execute()
+    )
+    return {
+        "total_from_supabase": resp.count,
+        "rows_returned": len(resp.data),
+        "filenames": [r.get("filename") for r in resp.data],
+        "titles": [r.get("title") for r in resp.data],
+    }
+
+
 # ── Sync endpoint ────────────────────────────────────────
 @router.get("/", response_model=SyncResponse)
 async def list_resumes():
