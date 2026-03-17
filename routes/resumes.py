@@ -45,6 +45,25 @@ async def upload_resume(
     if len(content) > MAX_SIZE:
         raise HTTPException(status_code=400, detail="File exceeds 10 MB limit")
 
+    # Check if title already exists
+    sb = get_supabase()
+    try:
+        existing = (
+            sb.table(TABLE)
+            .select("id")
+            .eq("title", title)
+            .maybe_single()
+            .execute()
+        )
+    except Exception:
+        existing = None
+
+    if existing and existing.data:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A resume with title '{title}' already exists",
+        )
+
     checksum = hashlib.sha256(content).hexdigest()
 
     resume_id = uuid4()
@@ -102,7 +121,7 @@ async def get_resume(resume_id: UUID):
     try:
         resp = (
             sb.table(TABLE)
-            .select("id, filename, storage_path, content_type, size_bytes")
+            .select("id, title, filename, storage_path, content_type, size_bytes")
             .eq("id", str(resume_id))
             .maybe_single()
             .execute()
@@ -127,6 +146,7 @@ async def get_resume(resume_id: UUID):
 
     return {
         "id": str(resume_id),
+        "title": resp.data.get("title"),
         "filename": resp.data.get("filename"),
         "content_type": resp.data.get("content_type"),
         "size_bytes": resp.data.get("size_bytes"),

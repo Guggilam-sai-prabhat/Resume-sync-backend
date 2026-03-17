@@ -14,6 +14,7 @@ def get_all_resumes_for_sync() -> SyncResponse:
             sb.table("resumes")
             .select("id, title, filename, checksum_sha256, size_bytes, updated_at, storage_path")
             .order("updated_at", desc=True)
+            .range(0, 999)
             .execute()
         )
     except Exception as e:
