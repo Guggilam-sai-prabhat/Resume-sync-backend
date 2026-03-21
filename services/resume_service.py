@@ -12,9 +12,9 @@ def get_all_resumes_for_sync() -> SyncResponse:
     try:
         resp = (
             sb.table("resumes")
-            .select("id, title, filename, checksum_sha256, size_bytes, updated_at, storage_path")
+            .select("id, title, filename, checksum_sha256, size_bytes, updated_at, storage_path", count="exact")
             .order("updated_at", desc=True)
-            .range(0, 999)
+            .limit(1000)
             .execute()
         )
     except Exception as e:
@@ -23,18 +23,24 @@ def get_all_resumes_for_sync() -> SyncResponse:
             detail=f"Supabase query failed: {e}",
         )
 
+    print(f"[SYNC] Total rows returned: {len(resp.data)}, count: {resp.count}")
+
     files: dict[str, ResumeFileEntry] = {}
     for row in resp.data:
-        filename = row.get("filename")
-        if not filename:
+        title = row.get("title")
+        if not title:
             continue
-        files[filename] = ResumeFileEntry(
+        # Use title as key; skip duplicates (keep latest since sorted by updated_at desc)
+        if title in files:
+            continue
+        files[title] = ResumeFileEntry(
             id=row["id"],
-            title=row.get("title"),
+            title=title,
             checksum=row["checksum_sha256"],
             size=row["size_bytes"],
             updated_at=row["updated_at"],
             storage_path=row["storage_path"],
+            filename=row.get("filename"),
         )
 
     return SyncResponse(

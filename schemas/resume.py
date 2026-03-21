@@ -11,6 +11,7 @@ class ResumeFileEntry(BaseModel):
     size: int
     updated_at: datetime
     storage_path: str
+    filename: str | None = None
 
 
 class SyncResponse(BaseModel):
